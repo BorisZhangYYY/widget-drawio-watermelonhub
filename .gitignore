@@ -3,6 +3,8 @@ build
 classes
 node_modules
 .vscode/settings.json
+*.tar.gz
+*.zip
 src/main/webapp/WEB-INF/lib/animal-sniffer-annotations-*.jar
 src/main/webapp/WEB-INF/lib/annotations-*.jar
 src/main/webapp/WEB-INF/lib/api-common-*.jar
