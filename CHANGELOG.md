@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.3
+
+1. 修复外部 IP / 非 localhost 访问时 draw.io 编辑器内容空白的问题
+2. 修复异步初始化竞态，确保 SVG 数据和块路径加载完成后再初始化编辑器
+3. 统一 `/api/file/getFile` 路径格式为 `/data/assets/...`
+4. 增加思源 API Token 认证，解决外部访问时 cookie 认证不稳定的问题
+5. 改进错误处理，避免路径显示 `null`
+
 ## v0.1.2
 
 1. 修复siyuan认证问题

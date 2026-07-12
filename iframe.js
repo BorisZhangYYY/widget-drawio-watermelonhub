@@ -11,6 +11,12 @@ DiagramEditor.prototype.iframe = null;
 
 DiagramEditor.prototype.blockPath = null;
 
+DiagramEditor.prototype.token = null;
+
+DiagramEditor.prototype.tokenPromise = null;
+
+DiagramEditor.prototype.dataPromise = null;
+
 
 function DiagramEditor()
 {
@@ -18,10 +24,28 @@ function DiagramEditor()
 	this.iframe = document.getElementById('drawio-iframe');
 	// 隐藏Tab栏
 	this.config = {css : '.geTabContainer { height: 0px !important; }'};
-	this.getSvgDateUrl().then(result => {this.svgDataURL = result;});
-	this.getBlockPath().then(path => {this.blockPath = path;});
-	
+
 	var self = this;
+
+	// 优先通过 window.opener.postMessage 安全获取 token，避免 token 暴露在 URL 中
+	this.tokenPromise = this.requestTokenFromOpener().then(function(token) {
+		self.token = token;
+		return token;
+	});
+
+	// 拿到 token 后再启动数据请求
+	this.dataPromise = this.tokenPromise.then(function() {
+		return Promise.all([
+			self.getSvgDateUrl(),
+			self.getBlockPath()
+		]);
+	}).then(function(results) {
+		self.svgDataURL = results[0];
+		self.blockPath = results[1];
+	}).catch(function(error) {
+		self.showError('加载 draw.io 数据失败：' + (error.message || '未知错误'));
+		throw error;
+	});
 
 
   	window.addEventListener('message', function(evt)
@@ -44,7 +68,7 @@ function DiagramEditor()
 		}
 	});
 
-	
+
 };
 
 
@@ -77,12 +101,85 @@ DiagramEditor.prototype.handleMessage = function(msg)
 
 };
 
+DiagramEditor.prototype.showError = function(message)
+{
+	console.error(message);
+	var errorDiv = document.getElementById('error-message');
+	if (errorDiv)
+	{
+		errorDiv.textContent = message;
+		errorDiv.style.display = 'block';
+	}
+};
+
+DiagramEditor.prototype.getAuthHeaders = function(contentType)
+{
+	var headers = {};
+	if (contentType !== false)
+	{
+		headers['Content-Type'] = contentType || 'application/json';
+	}
+	if (this.token)
+	{
+		headers['Authorization'] = 'Token ' + this.token;
+	}
+	return headers;
+};
+
 DiagramEditor.prototype.postMessage = function(msg)
 {
 	if (this.iframe != null)
 	{
 		this.iframe.contentWindow.postMessage(JSON.stringify(msg), '*');
 	}
+};
+
+/**
+ * 通过 window.opener.postMessage 安全地向父窗口请求思源 API Token。
+ * 这种方式比 URL 参数更安全，token 不会出现在浏览器历史或服务器日志中。
+ */
+DiagramEditor.prototype.requestTokenFromOpener = function()
+{
+	var self = this;
+	return new Promise(function(resolve) {
+		// Fallback 1: 如果页面是直接从 URL 打开，没有 opener，尝试从 URL 参数读取
+		if (!window.opener)
+		{
+			var token = DiagramEditor.getTokenFromUrl();
+			resolve(token);
+			return;
+		}
+
+		function handleMessage(evt)
+		{
+			if (evt.data && evt.data.type === 'siyuan-token')
+			{
+				window.removeEventListener('message', handleMessage);
+				resolve(evt.data.token || null);
+			}
+		}
+
+		window.addEventListener('message', handleMessage);
+
+		try
+		{
+			window.opener.postMessage({type: 'request-siyuan-token'}, '*');
+		}
+		catch (e)
+		{
+			console.error('向 opener 请求 token 失败:', e);
+			window.removeEventListener('message', handleMessage);
+			resolve(DiagramEditor.getTokenFromUrl());
+			return;
+		}
+
+		// 3 秒超时
+		setTimeout(function() {
+			window.removeEventListener('message', handleMessage);
+			self.showError('从父窗口获取思源 Token 超时，将尝试使用 URL 参数或 cookie 认证');
+			resolve(DiagramEditor.getTokenFromUrl());
+		}, 3000);
+	});
 };
 
 /**
@@ -94,18 +191,26 @@ DiagramEditor.prototype.configureEditor = function()
 };
 
 /**
- * Posts load message to editor.
+ * Posts load message to editor after data is ready.
  */
-DiagramEditor.prototype.initializeEditor = function()
+DiagramEditor.prototype.initializeEditor = async function()
 {
-	this.postMessage({
-		action: 'load',
-		autosave: 1,
-		modified: 'unsavedChanges',
-		title:`${this.blockPath}/${this.blockId}-drawio.svg`,
-		xml: this.svgDataURL
-		});
+	try
+	{
+		await this.dataPromise;
 
+		this.postMessage({
+			action: 'load',
+			autosave: 1,
+			modified: 'unsavedChanges',
+			title: `${this.blockPath || 'untitled'}/${this.blockId}-drawio.svg`,
+			xml: this.svgDataURL
+		});
+	}
+	catch (error)
+	{
+		this.showError('初始化编辑器失败：' + (error.message || '未知错误'));
+	}
 };
 
 /**
@@ -115,11 +220,11 @@ DiagramEditor.prototype.save = function()
 {
 
 	this.postMessage({
-		action: 'export', 
+		action: 'export',
 		format:'xmlsvg'
 	});
 
-	
+
 };
 
 DiagramEditor.prototype.export = async function(msg)
@@ -127,10 +232,12 @@ DiagramEditor.prototype.export = async function(msg)
 	const code = await this.saveSvgToSiyuan(msg.data, this.blockId + "-drawio.svg");
 	if(code == 0){
 		this.postMessage({
-		action: 'status', 
+		action: 'status',
 		messageKey: 'allChangesSaved',
 		modified: false
 		});
+	} else {
+		this.showError('保存失败，请检查网络或认证状态');
 	}
 };
 
@@ -145,14 +252,16 @@ DiagramEditor.getBlockId = function() {
   return new URLSearchParams(window.location.search).get("siyuan-blockid");
 }
 
+// 从 URL 参数获取 token（作为无 opener 时的 fallback，不推荐常规使用）
+DiagramEditor.getTokenFromUrl = function() {
+  return new URLSearchParams(window.location.search).get("siyuan-token");
+}
 
 
 DiagramEditor.prototype.getBlockPath = async function() {
     return fetch("/api/filetree/getHPathByID", {
         method: "POST",
-        headers: {
-            'Content-Type': 'application/json'
-        },
+        headers: this.getAuthHeaders(),
         body: JSON.stringify({
             id: this.blockId
         }),
@@ -164,7 +273,11 @@ DiagramEditor.prototype.getBlockPath = async function() {
         return response.json();
     })
     .then(msg => {
-		return msg.data;});
+		return msg.data;})
+    .catch(error => {
+		console.error("获取块路径失败:", error);
+		return null;
+	});
 }
 
 
@@ -173,16 +286,18 @@ DiagramEditor.prototype.getBlockPath = async function() {
 DiagramEditor.prototype.getSvgDateUrl = async function() {
     return fetch("/api/file/getFile", {
         method: "POST",
-        headers: {
-            'Content-Type': 'application/json'
-        },
+        headers: this.getAuthHeaders(),
         body: JSON.stringify({
-            path: `data/assets/${this.blockId}-drawio.svg`,
+            path: `/data/assets/${this.blockId}-drawio.svg`,
         }),
     }).then((response) => {
+        // 404 表示文件尚未创建，允许新建
+        if (response.status === 404) {
+            return null;
+        }
         // 检查响应状态
         if (response.status !== 200 || response == null) {
-            return null;
+            throw new Error("getFile failed: " + response.status);
         }
         return response.blob();
     })
@@ -192,26 +307,30 @@ DiagramEditor.prototype.getSvgDateUrl = async function() {
             reader.onload = e => resolve(e.target.result);
             reader.onerror = error => reject(error);
             reader.readAsDataURL(blob);
-    }));
+    }))
+    .catch(error => {
+		console.error("读取 SVG 失败:", error);
+		return null;
+	});
 }
 
 DiagramEditor.prototype.saveSvgToSiyuan = async function(base64Data, fileName) {
 	// 1. 分离 Base64 数据和 MIME 类型
 	const parts = base64Data.split(';base64,');
 	const base64String = parts.length > 1 ? parts[1] : base64Data;
-	
+
 	// 2. 解码 Base64 字符串
 	const byteCharacters = atob(base64String);
-	
+
 	// 3. 创建字节数组
 	const byteArrays = new Uint8Array(byteCharacters.length);
 	for (let i = 0; i < byteCharacters.length; i++) {
 		byteArrays[i] = byteCharacters.charCodeAt(i);
 	}
-	
+
 	// 4. 创建 Blob 对象（指定为 SVG 类型）
 	const blob = new Blob([byteArrays], { type: 'image/svg+xml' });
-	
+
 	// 5. 创建 File 对象
 	const file =  new File([blob], fileName, { type: 'image/svg+xml' });
 
@@ -223,6 +342,7 @@ DiagramEditor.prototype.saveSvgToSiyuan = async function(base64Data, fileName) {
 
 	return fetch("/api/file/putFile", {
 		method: "POST",
+		headers: this.getAuthHeaders(false),
 		body: formdata,
 	})
 		.then((response) => {
@@ -230,17 +350,28 @@ DiagramEditor.prototype.saveSvgToSiyuan = async function(base64Data, fileName) {
 		})
 		.then((data) => {
 		return data.code;
+		})
+		.catch((error) => {
+			console.error("保存 SVG 失败:", error);
+			return -1;
 		});
 }
 
 DiagramEditor.prototype.isAuthEnable = async function(){
-  const reponse = await fetch("/api/attr/getBlockAttrs", {
-    body: JSON.stringify({
-      id: this.blockId,
-    }),
-    method: "POST",
-  });
-  return reponse.status === 401;
+  try {
+    await this.tokenPromise;
+    const reponse = await fetch("/api/attr/getBlockAttrs", {
+      headers: this.getAuthHeaders(),
+      body: JSON.stringify({
+        id: this.blockId,
+      }),
+      method: "POST",
+    });
+    return reponse.status === 401;
+  } catch (error) {
+    console.error("认证检查失败:", error);
+    return false;
+  }
 }
 
 const diagramEditor = new DiagramEditor();
