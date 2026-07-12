@@ -129,13 +129,14 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // 响应来自 iframe.html 的 token 请求（通过 window.opener.postMessage 安全传递）
+// 即使当前无法获取 token，也回复 null，避免子窗口一直等待超时
 window.addEventListener('message', function(evt) {
     if (evt.data && evt.data.type === 'request-siyuan-token') {
         const token = getSiyuanToken();
-        if (token && evt.source) {
+        if (evt.source) {
             evt.source.postMessage({
                 type: 'siyuan-token',
-                token: token
+                token: token  // 可能为 null，子窗口会回退到 cookie 认证
             }, '*');
         }
     }

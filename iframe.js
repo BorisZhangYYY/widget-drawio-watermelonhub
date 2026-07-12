@@ -107,8 +107,32 @@ DiagramEditor.prototype.showError = function(message)
 	var errorDiv = document.getElementById('error-message');
 	if (errorDiv)
 	{
-		errorDiv.textContent = message;
+		errorDiv.innerHTML = '';
+		var textSpan = document.createElement('span');
+		textSpan.textContent = message;
+		errorDiv.appendChild(textSpan);
+
+		var closeBtn = document.createElement('button');
+		closeBtn.textContent = '×';
+		closeBtn.style.marginLeft = '12px';
+		closeBtn.style.background = 'transparent';
+		closeBtn.style.border = 'none';
+		closeBtn.style.color = '#c62828';
+		closeBtn.style.fontSize = '18px';
+		closeBtn.style.cursor = 'pointer';
+		closeBtn.style.lineHeight = '1';
+		closeBtn.onclick = function() {
+			errorDiv.style.display = 'none';
+		};
+		errorDiv.appendChild(closeBtn);
+
 		errorDiv.style.display = 'block';
+
+		// 10 秒后自动隐藏，避免错误信息一直占着屏幕
+		clearTimeout(errorDiv._hideTimer);
+		errorDiv._hideTimer = setTimeout(function() {
+			errorDiv.style.display = 'none';
+		}, 10000);
 	}
 };
 
@@ -176,7 +200,7 @@ DiagramEditor.prototype.requestTokenFromOpener = function()
 		// 3 秒超时
 		setTimeout(function() {
 			window.removeEventListener('message', handleMessage);
-			self.showError('从父窗口获取思源 Token 超时，将尝试使用 URL 参数或 cookie 认证');
+			console.warn('从父窗口获取思源 Token 超时，将回退到 cookie 认证');
 			resolve(DiagramEditor.getTokenFromUrl());
 		}, 3000);
 	});
